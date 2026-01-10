@@ -14,7 +14,7 @@ For each thread:
    - EPIPHANY: Major breakthrough or insight (rare - genuine "aha" moments)
    - CONCEPT: Technical definition, explanation, or implementation idea
    - REFLECTION: Personal thought, observation, or musing
-   - GLIMMER: Fleeting creative spark or poetic moment (NOT actionable)
+   - GLIMMER: A captured moment - photographing a feeling. Poetic, evocative, sensory. These preserve the texture of an experience, not its actionability.
    - REMINDER: Note to self about something to remember
    - WORKLOG: Summary of work already completed
 
@@ -85,5 +85,5 @@ Return JSON array - ALL items are type KNOWLEDGE:
 - Implementation ideas are CONCEPT or EPIPHANY with `needs_chord: true`
 - The Note is created first, then escalated to a Chord if needed
 - Be conservative with EPIPHANY - reserve for genuinely novel insights
-- GLIMMER is for poetic/creative moments, never has `needs_chord: true`
+- GLIMMER is for poetic moments that capture a feeling - sensory, evocative, experiential. Never has `needs_chord: true`. Think of it as photographing an emotion or atmosphere.
 - Chord names should be lowercase, hyphenated slugs
