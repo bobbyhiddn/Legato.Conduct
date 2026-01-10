@@ -92,7 +92,10 @@ jobs:
   process-knowledge:
     runs-on: ubuntu-latest
     needs: classify
-    if: contains(needs.classify.outputs.routing_json, '"type":"KNOWLEDGE"')
+    # Run if there are KNOWLEDGE items OR PROJECT/chord items (chords get linked notes)
+    if: |
+      contains(needs.classify.outputs.routing_json, '"type":"KNOWLEDGE"') ||
+      (contains(needs.classify.outputs.routing_json, '"type":"PROJECT"') && contains(needs.classify.outputs.routing_json, '"project_scope":"chord"'))
     steps:
       - uses: actions/checkout@v4
 
@@ -117,6 +120,13 @@ jobs:
         run: |
           python -m legato.knowledge --input routing.json --commit
 
+      - name: Re-upload routing with knowledge links
+        uses: actions/upload-artifact@v4
+        with:
+          name: routing-decisions
+          path: routing.json
+          overwrite: true
+
       - name: Trigger Pit Library Sync
         run: |
           curl -sf -X POST "https://legato-pit.fly.dev/memory/api/sync" \
@@ -124,5 +134,5 @@ jobs:
             -H "Content-Type: application/json" || true
 
   # Projects are queued via Pit pulling routing-decisions artifact
-  # No callback needed - Pit fetches artifacts from this workflow
+  # Chords now have related_knowledge_id linking to their Library entry
   # User approves in Pit UI, then Pit triggers spawn-from-pit workflow

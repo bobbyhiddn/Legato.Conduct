@@ -16,7 +16,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from .classifier import ClassifiedThread, ThreadType, KnowledgeCategory
+from .classifier import ClassifiedThread, ThreadType, KnowledgeCategory, ChordScope
 
 
 @dataclass
@@ -34,21 +34,39 @@ class KnowledgeArtifact:
     correlation_score: float = 0.0
     related: list = field(default_factory=list)
 
+    # Chord escalation fields
+    needs_chord: bool = False
+    chord_name: Optional[str] = None
+    chord_scope: Optional[str] = None  # "note" or "chord"
+
     def to_markdown(self) -> str:
         """Convert to markdown format for Library."""
         created = self.created or datetime.utcnow().isoformat() + "Z"
 
-        frontmatter = f"""---
-id: {self.id}
-title: "{self.title}"
-category: {self.category.value}
-created: {created}
-source_transcript: {self.source_transcript or 'unknown'}
-domain_tags: {json.dumps(self.domain_tags)}
-key_phrases: {json.dumps(self.key_phrases)}
-correlation_score: {self.correlation_score}
-related: {json.dumps(self.related)}
----"""
+        frontmatter_lines = [
+            "---",
+            f"id: {self.id}",
+            f'title: "{self.title}"',
+            f"category: {self.category.value}",
+            f"created: {created}",
+            f"source_transcript: {self.source_transcript or 'unknown'}",
+            f"domain_tags: {json.dumps(self.domain_tags)}",
+            f"key_phrases: {json.dumps(self.key_phrases)}",
+            f"correlation_score: {self.correlation_score}",
+            f"related: {json.dumps(self.related)}",
+            f"needs_chord: {str(self.needs_chord).lower()}",
+        ]
+
+        # Add chord fields if needs_chord is true
+        if self.needs_chord:
+            frontmatter_lines.append(f"chord_name: {self.chord_name or 'null'}")
+            frontmatter_lines.append(f"chord_scope: {self.chord_scope or 'null'}")
+            frontmatter_lines.append("chord_id: null")
+            frontmatter_lines.append("chord_status: null")
+            frontmatter_lines.append("chord_repo: null")
+
+        frontmatter_lines.append("---")
+        frontmatter = "\n".join(frontmatter_lines)
 
         return f"{frontmatter}\n\n{self.content}"
 
@@ -93,15 +111,15 @@ def extract_knowledge(thread: ClassifiedThread) -> KnowledgeArtifact:
     """
     Extract a knowledge artifact from a classified thread.
 
+    All threads are KNOWLEDGE in the new ontology. If needs_chord is True,
+    the artifact will include chord escalation fields in frontmatter.
+
     Args:
-        thread: A classified thread with type KNOWLEDGE
+        thread: A classified thread
 
     Returns:
         KnowledgeArtifact ready for commit
     """
-    if thread.thread_type != ThreadType.KNOWLEDGE:
-        raise ValueError(f"Thread {thread.id} is not a KNOWLEDGE thread")
-
     extractor_prompt = load_prompt("knowledge-extractor")
 
     # Prepare input for Claude
@@ -114,6 +132,12 @@ def extract_knowledge(thread: ClassifiedThread) -> KnowledgeArtifact:
         "key_phrases": thread.key_phrases,
         "source_id": thread.source_id,
     }
+
+    # Add chord context if needs_chord
+    if thread.needs_chord:
+        input_data["needs_chord"] = True
+        input_data["chord_name"] = thread.chord_name
+        input_data["chord_scope"] = thread.chord_scope.value if thread.chord_scope else None
 
     response = call_claude(extractor_prompt, json.dumps(input_data, indent=2))
 
@@ -130,7 +154,7 @@ def extract_knowledge(thread: ClassifiedThread) -> KnowledgeArtifact:
 
     # Generate artifact ID
     category = thread.knowledge_category or KnowledgeCategory.GLIMMER
-    slug = (thread.knowledge_title or thread.id).lower()
+    slug = (thread.knowledge_title or thread.chord_name or thread.id).lower()
     slug = "".join(c if c.isalnum() or c == "-" else "-" for c in slug)
     slug = "-".join(filter(None, slug.split("-")))[:50]
 
@@ -147,6 +171,9 @@ def extract_knowledge(thread: ClassifiedThread) -> KnowledgeArtifact:
         created=datetime.utcnow().isoformat() + "Z",
         correlation_score=thread.correlation_score,
         related=[m.get("signal_id") for m in thread.correlation_matches if m.get("score", 0) > 0.5],
+        needs_chord=thread.needs_chord,
+        chord_name=thread.chord_name,
+        chord_scope=thread.chord_scope.value if thread.chord_scope else None,
     )
 
 
@@ -218,7 +245,10 @@ def commit_knowledge(artifact: KnowledgeArtifact, library_repo: Optional[str] = 
 
 def process_routing(routing_file: str, commit: bool = False) -> list[dict]:
     """
-    Process all KNOWLEDGE items from a routing file.
+    Process classified threads from a routing file.
+
+    All threads are KNOWLEDGE in the new ontology. Items with needs_chord=true
+    will have chord escalation fields in their frontmatter for Pit to detect.
 
     Args:
         routing_file: Path to routing.json
@@ -233,9 +263,6 @@ def process_routing(routing_file: str, commit: bool = False) -> list[dict]:
     results = []
 
     for item in routing:
-        if item.get("type") != "KNOWLEDGE":
-            continue
-
         thread = ClassifiedThread.from_dict(item)
 
         try:
@@ -248,11 +275,16 @@ def process_routing(routing_file: str, commit: bool = False) -> list[dict]:
                 result = {
                     "artifact_id": artifact.id,
                     "path": artifact.get_path(),
-                    "action": "would_create"
+                    "action": "would_create",
+                    "needs_chord": artifact.needs_chord
                 }
 
             results.append(result)
-            print(f"Processed: {artifact.id}")
+
+            if artifact.needs_chord:
+                print(f"Processed knowledge (needs chord): {artifact.id}")
+            else:
+                print(f"Processed knowledge: {artifact.id}")
 
         except Exception as e:
             print(f"Error processing {thread.id}: {e}", file=sys.stderr)

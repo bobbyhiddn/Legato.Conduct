@@ -17,10 +17,8 @@ from pathlib import Path
 
 
 class ThreadType(Enum):
-    """Type of content in a thread."""
+    """Type of content in a thread. Everything is KNOWLEDGE in the new ontology."""
     KNOWLEDGE = "KNOWLEDGE"
-    PROJECT = "PROJECT"
-    MIXED = "MIXED"
 
 
 class KnowledgeCategory(Enum):
@@ -33,28 +31,33 @@ class KnowledgeCategory(Enum):
     WORKLOG = "worklog"        # Summary of work done
 
 
-class ProjectScope(Enum):
-    """Scope for project implementations."""
+class ChordScope(Enum):
+    """Scope for chord implementations (when needs_chord is true)."""
     NOTE = "note"    # Single PR, quick implementation
     CHORD = "chord"  # Multi-PR, complex implementation
 
 
 @dataclass
 class ClassifiedThread:
-    """A classified thread from a transcript."""
+    """A classified thread from a transcript.
+
+    In the new ontology, everything is KNOWLEDGE. Items that need
+    implementation have needs_chord=True with chord escalation fields.
+    """
 
     id: str
     raw_text: str
-    thread_type: ThreadType
+    thread_type: ThreadType  # Always KNOWLEDGE now
 
-    # If KNOWLEDGE
+    # Knowledge fields (always present)
     knowledge_category: Optional[KnowledgeCategory] = None
     knowledge_title: Optional[str] = None
+    description: Optional[str] = None
 
-    # If PROJECT
-    project_name: Optional[str] = None
-    project_scope: Optional[ProjectScope] = None
-    project_description: Optional[str] = None
+    # Chord escalation fields
+    needs_chord: bool = False
+    chord_name: Optional[str] = None
+    chord_scope: Optional[ChordScope] = None
 
     # Correlation results
     correlation_score: float = 0.0
@@ -69,15 +72,14 @@ class ClassifiedThread:
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
-        return {
+        result = {
             "id": self.id,
             "raw_text": self.raw_text,
             "type": self.thread_type.value,
             "knowledge_category": self.knowledge_category.value if self.knowledge_category else None,
             "knowledge_title": self.knowledge_title,
-            "project_name": self.project_name,
-            "project_scope": self.project_scope.value if self.project_scope else None,
-            "project_description": self.project_description,
+            "description": self.description,
+            "needs_chord": self.needs_chord,
             "correlation_score": self.correlation_score,
             "correlation_matches": self.correlation_matches,
             "correlation_action": self.correlation_action,
@@ -87,10 +89,18 @@ class ClassifiedThread:
             "parsed_at": self.parsed_at,
         }
 
+        # Only include chord fields if needs_chord is true
+        if self.needs_chord:
+            result["chord_name"] = self.chord_name
+            result["chord_scope"] = self.chord_scope.value if self.chord_scope else None
+
+        return result
+
     @classmethod
     def from_dict(cls, data: dict) -> "ClassifiedThread":
         """Create from dictionary."""
-        thread_type = ThreadType(data.get("type", "KNOWLEDGE"))
+        # Always KNOWLEDGE in new ontology
+        thread_type = ThreadType.KNOWLEDGE
 
         knowledge_category = None
         if data.get("knowledge_category"):
@@ -98,11 +108,11 @@ class ClassifiedThread:
             category_value = data["knowledge_category"].lower()
             knowledge_category = KnowledgeCategory(category_value)
 
-        project_scope = None
-        if data.get("project_scope"):
+        chord_scope = None
+        if data.get("chord_scope"):
             # Normalize to lowercase
-            scope_value = data["project_scope"].lower()
-            project_scope = ProjectScope(scope_value)
+            scope_value = data["chord_scope"].lower()
+            chord_scope = ChordScope(scope_value)
 
         return cls(
             id=data.get("id", ""),
@@ -110,9 +120,10 @@ class ClassifiedThread:
             thread_type=thread_type,
             knowledge_category=knowledge_category,
             knowledge_title=data.get("knowledge_title", data.get("title")),
-            project_name=data.get("project_name"),
-            project_scope=project_scope,
-            project_description=data.get("project_description", data.get("description")),
+            description=data.get("description"),
+            needs_chord=data.get("needs_chord", False),
+            chord_name=data.get("chord_name"),
+            chord_scope=chord_scope,
             correlation_score=data.get("correlation_score", 0.0),
             correlation_matches=data.get("correlation_matches", []),
             correlation_action=data.get("correlation_action", "CREATE"),
@@ -349,10 +360,9 @@ def main():
         with open(args.output, "w") as f:
             json.dump(output, f, indent=2)
 
-        knowledge_count = sum(1 for t in classified if t.thread_type == ThreadType.KNOWLEDGE)
-        project_count = sum(1 for t in classified if t.thread_type == ThreadType.PROJECT)
+        needs_chord_count = sum(1 for t in classified if t.needs_chord)
 
-        print(f"Classified {len(classified)} threads: {knowledge_count} knowledge, {project_count} projects")
+        print(f"Classified {len(classified)} threads: {needs_chord_count} need chord escalation")
 
 
 if __name__ == "__main__":
