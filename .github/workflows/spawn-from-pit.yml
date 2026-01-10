@@ -51,6 +51,10 @@ jobs:
           gh repo clone "${NEW_REPO}" project-clone
           cd project-clone
 
+          # Configure git identity for commits
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
           # Copy template files if they exist
           if [ -d "../templates/${PROJECT_TYPE}" ]; then
             cp -r "../templates/${PROJECT_TYPE}/." .
@@ -77,6 +81,10 @@ jobs:
           fi
 
           cd project-clone
+
+          # Configure git identity for commits
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
           # Parse signal JSON and write SIGNAL.md
           cat > SIGNAL.md << 'SIGNAL_EOF'

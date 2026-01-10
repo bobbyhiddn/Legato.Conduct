@@ -55,6 +55,10 @@ jobs:
           gh repo clone "${NEW_REPO}" project-clone
           cd project-clone
 
+          # Configure git identity for commits
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
           # Copy template files
           cp -r "../templates/${PROJECT_TYPE}/." .
 
@@ -79,6 +83,10 @@ jobs:
           fi
 
           cd project-clone
+
+          # Configure git identity for commits
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
           echo "${SIGNAL_JSON}" | python3 -c "
           import json, sys

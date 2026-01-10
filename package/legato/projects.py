@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from .classifier import ClassifiedThread, ThreadType, ProjectScope
+from .classifier import ClassifiedThread, ThreadType, ChordScope
 
 
 @dataclass
@@ -22,7 +22,7 @@ class ProjectSpec:
     """Specification for a Lab project."""
 
     name: str
-    scope: ProjectScope
+    scope: ChordScope
     title: str
     description: str
     domain_tags: list = field(default_factory=list)
@@ -33,7 +33,7 @@ class ProjectSpec:
 
     def get_repo_name(self, org: str = "Legato") -> str:
         """Get the full repository name."""
-        suffix = "Note" if self.scope == ProjectScope.NOTE else "Chord"
+        suffix = "Note" if self.scope == ChordScope.NOTE else "Chord"
         return f"{org}/Lab.{self.name}.{suffix}"
 
     def to_signal(self) -> dict:
@@ -47,7 +47,7 @@ class ProjectSpec:
             "domain_tags": self.domain_tags,
             "intent": self.description[:200] if self.description else "",
             "key_phrases": self.key_phrases,
-            "path": f"Lab.{self.name}.{'Note' if self.scope == ProjectScope.NOTE else 'Chord'}",
+            "path": f"Lab.{self.name}.{'Note' if self.scope == ChordScope.NOTE else 'Chord'}",
             "created": self.created or datetime.utcnow().isoformat() + "Z",
             "updated": datetime.utcnow().isoformat() + "Z",
         }
@@ -102,10 +102,10 @@ def create_project(thread: ClassifiedThread) -> ProjectSpec:
 
     input_data = {
         "thread_id": thread.id,
-        "scope": thread.project_scope.value if thread.project_scope else "note",
-        "name": thread.project_name or "unnamed-project",
+        "scope": thread.chord_scope.value if thread.chord_scope else "note",
+        "name": thread.chord_name or "unnamed-project",
         "title": thread.knowledge_title or "Untitled Project",
-        "description": thread.project_description or thread.raw_text,
+        "description": thread.description or thread.raw_text,
         "domain_tags": thread.domain_tags,
         "key_phrases": thread.key_phrases,
         "source_id": thread.source_id,
@@ -120,7 +120,7 @@ def create_project(thread: ClassifiedThread) -> ProjectSpec:
         "title": input_data["title"],
         "context_from_transcript": thread.raw_text[:500],
         "correlation_context": "",
-        "clear_objective": thread.project_description or "Implement the project as described",
+        "clear_objective": thread.description or "Implement the project as described",
         "criteria": thread.key_phrases[:5],
         "transcript_id": thread.source_id or "unknown",
         "related_links": [],
@@ -154,10 +154,10 @@ From voice transcript {tasker_input['transcript_id']}:
 """
 
     return ProjectSpec(
-        name=thread.project_name or "unnamed-project",
-        scope=thread.project_scope or ProjectScope.NOTE,
+        name=thread.chord_name or "unnamed-project",
+        scope=thread.chord_scope or ChordScope.NOTE,
         title=thread.knowledge_title or "Untitled Project",
-        description=thread.project_description or thread.raw_text,
+        description=thread.description or thread.raw_text,
         domain_tags=thread.domain_tags,
         key_phrases=thread.key_phrases,
         source_transcript=thread.source_id,
@@ -185,7 +185,7 @@ def spawn_lab_repo(spec: ProjectSpec, org: str = None) -> dict:
     org = org or os.environ.get("LAB_ORG", "Legato")
 
     repo_name = spec.get_repo_name(org)
-    template_type = "note" if spec.scope == ProjectScope.NOTE else "chord"
+    template_type = "note" if spec.scope == ChordScope.NOTE else "chord"
 
     # Create repository
     create_cmd = [

@@ -12,7 +12,7 @@ __version__ = "0.3.0"
 from .classifier import (
     ThreadType,
     KnowledgeCategory,
-    ProjectScope,
+    ChordScope,
     ClassifiedThread,
     classify_threads,
 )
@@ -38,7 +38,7 @@ __all__ = [
     # Classifier
     "ThreadType",
     "KnowledgeCategory",
-    "ProjectScope",
+    "ChordScope",
     "ClassifiedThread",
     "classify_threads",
     # Knowledge
