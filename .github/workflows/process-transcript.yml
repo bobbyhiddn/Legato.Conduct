@@ -81,6 +81,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           SYSTEM_PAT: ${{ secrets.SYSTEM_PAT }}
           PIT_URL: https://legato-pit.fly.dev
+          CATEGORY_DEFINITIONS: ${{ toJson(github.event.client_payload.category_definitions) }}
         run: |
           python -m legato.classifier --phase classify --input threads.json --output routing.json
           echo "routing_json=$(cat routing.json | jq -c .)" >> $GITHUB_OUTPUT
