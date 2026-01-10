@@ -93,7 +93,7 @@ jobs:
           git commit -m "Add project signal metadata" || true
           git push || true
 
-      - name: Create initial issue for Copilot
+      - name: Create issue and assign to Copilot
         env:
           GH_TOKEN: ${{ secrets.LAB_PAT }}
           TASKER_BODY: ${{ github.event.client_payload.tasker_body }}
@@ -109,57 +109,47 @@ jobs:
           fi
 
           REPO="${LEGATO_ORG}/Lab.${PROJECT_NAME}.${SUFFIX}"
-
-          echo "Creating issue in ${REPO}"
-
-          # Create the issue
-          ISSUE_URL=$(gh issue create \
-            --repo "${REPO}" \
-            --title "Initial Implementation" \
-            --body "${TASKER_BODY}" \
-            --label "copilot") || true
-
-          echo "Issue created: ${ISSUE_URL}"
-
-      - name: Assign issue to Copilot via GraphQL
-        if: success()
-        env:
-          GH_TOKEN: ${{ secrets.LAB_PAT }}
-          PROJECT_NAME: ${{ github.event.client_payload.project_name }}
-          PROJECT_TYPE: ${{ github.event.client_payload.project_type }}
-        run: |
-          LEGATO_ORG=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f1)
-
-          if [ "${PROJECT_TYPE}" = "note" ]; then
-            SUFFIX="Note"
-          else
-            SUFFIX="Chord"
-          fi
-
           REPO_NAME="Lab.${PROJECT_NAME}.${SUFFIX}"
 
-          echo "Assigning issue #1 to Copilot in ${LEGATO_ORG}/${REPO_NAME}..."
+          echo "Creating issue in ${REPO} using REST API..."
 
-          # Get issue node ID
+          # Create issue using REST API (auto-creates labels)
+          ISSUE_RESPONSE=$(gh api "/repos/${REPO}/issues" \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -f title="Initial Implementation" \
+            -f body="${TASKER_BODY}" \
+            -f "labels[]=copilot")
+
+          ISSUE_NUMBER=$(echo "${ISSUE_RESPONSE}" | jq -r '.number')
+          ISSUE_URL=$(echo "${ISSUE_RESPONSE}" | jq -r '.html_url')
+
+          echo "Issue created: #${ISSUE_NUMBER} - ${ISSUE_URL}"
+
+          # Wait for GitHub to fully process the issue
+          sleep 2
+
+          # Get issue node ID for GraphQL
+          echo "Getting issue GraphQL ID..."
           ISSUE_ID=$(gh api graphql -f query='
-            query($owner: String!, $repo: String!) {
+            query($owner: String!, $repo: String!, $number: Int!) {
               repository(owner: $owner, name: $repo) {
-                issue(number: 1) {
+                issue(number: $number) {
                   id
                 }
               }
             }
-          ' -f owner="${LEGATO_ORG}" -f repo="${REPO_NAME}" --jq '.data.repository.issue.id') || true
+          ' -f owner="${LEGATO_ORG}" -f repo="${REPO_NAME}" -F number="${ISSUE_NUMBER}" --jq '.data.repository.issue.id')
 
-          if [ -z "${ISSUE_ID}" ]; then
-            echo "Could not get issue ID"
-            exit 0
+          if [ -z "${ISSUE_ID}" ] || [ "${ISSUE_ID}" = "null" ]; then
+            echo "ERROR: Could not get issue GraphQL ID"
+            exit 1
           fi
 
-          echo "Issue ID: ${ISSUE_ID}"
+          echo "Issue GraphQL ID: ${ISSUE_ID}"
 
           # Get Copilot actor ID from repository suggestedActors
-          # Copilot's login is "copilot-swe-agent"
+          echo "Finding Copilot in suggested actors..."
           COPILOT_ID=$(gh api graphql -f query='
             query($owner: String!, $repo: String!) {
               repository(owner: $owner, name: $repo) {
@@ -172,34 +162,46 @@ jobs:
                 }
               }
             }
-          ' -f owner="${LEGATO_ORG}" -f repo="${REPO_NAME}" --jq '.data.repository.suggestedActors.nodes[] | select(.login == "copilot-swe-agent") | .id') || true
+          ' -f owner="${LEGATO_ORG}" -f repo="${REPO_NAME}" --jq '.data.repository.suggestedActors.nodes[] | select(.login == "copilot-swe-agent") | .id')
 
-          if [ -z "${COPILOT_ID}" ]; then
-            echo "Copilot (copilot-swe-agent) not available as assignee"
+          if [ -z "${COPILOT_ID}" ] || [ "${COPILOT_ID}" = "null" ]; then
+            echo "ERROR: Copilot (copilot-swe-agent) not available as assignee"
             echo "Make sure Copilot coding agent is enabled for this repo/org"
-            exit 0
+            exit 1
           fi
 
           echo "Copilot ID: ${COPILOT_ID}"
 
-          # Assign to Copilot
-          gh api graphql -f query='
-            mutation($issueId: ID!, $actorIds: [ID!]!) {
-              replaceActorsForAssignable(input: {
-                assignableId: $issueId,
-                actorIds: $actorIds
-              }) {
-                assignable {
-                  ... on Issue {
-                    assignees(first: 5) {
-                      nodes {
-                        login
+          # Assign to Copilot using GraphQL with proper JSON
+          echo "Assigning issue to Copilot..."
+          ASSIGN_RESULT=$(gh api graphql \
+            --raw-field query='
+              mutation AssignToCopilot($issueId: ID!, $actorIds: [ID!]!) {
+                replaceActorsForAssignable(input: {
+                  assignableId: $issueId,
+                  actorIds: $actorIds
+                }) {
+                  assignable {
+                    ... on Issue {
+                      assignees(first: 5) {
+                        nodes {
+                          login
+                        }
                       }
                     }
                   }
                 }
               }
-            }
-          ' -f issueId="${ISSUE_ID}" -f actorIds="[\"${COPILOT_ID}\"]" || true
+            ' \
+            --raw-field variables="$(jq -n --arg issueId "${ISSUE_ID}" --arg copilotId "${COPILOT_ID}" '{issueId: $issueId, actorIds: [$copilotId]}')")
 
-          echo "Copilot assignment complete"
+          # Verify assignment
+          ASSIGNEES=$(echo "${ASSIGN_RESULT}" | jq -r '.data.replaceActorsForAssignable.assignable.assignees.nodes[].login' 2>/dev/null || echo "")
+
+          if echo "${ASSIGNEES}" | grep -q "copilot"; then
+            echo "SUCCESS: Issue assigned to Copilot"
+            echo "Assignees: ${ASSIGNEES}"
+          else
+            echo "WARNING: Assignment may have failed"
+            echo "Response: ${ASSIGN_RESULT}"
+          fi
