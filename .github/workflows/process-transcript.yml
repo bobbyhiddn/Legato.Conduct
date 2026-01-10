@@ -79,6 +79,8 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SYSTEM_PAT: ${{ secrets.SYSTEM_PAT }}
+          PIT_URL: https://legato-pit.fly.dev
         run: |
           python -m legato.classifier --phase classify --input threads.json --output routing.json
           echo "routing_json=$(cat routing.json | jq -c .)" >> $GITHUB_OUTPUT
