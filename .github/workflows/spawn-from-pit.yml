@@ -38,9 +38,10 @@ jobs:
 
           echo "Creating repository: ${NEW_REPO}"
 
-          # Create the repository
+          # Create the repository with README to ensure main branch exists
           gh repo create "${NEW_REPO}" \
             --public \
+            --add-readme \
             --description "LEGATO project: ${PROJECT_NAME}"
 
           # Add topic tags for discoverability
@@ -55,10 +56,10 @@ jobs:
             cp -r "../templates/${PROJECT_TYPE}/." .
           fi
 
-          # Initial commit
+          # Initial commit - fail the workflow if this doesn't work
           git add .
-          git commit -m "Initialize ${PROJECT_NAME} from LEGATO template" || true
-          git push || true
+          git commit -m "Initialize ${PROJECT_NAME} from LEGATO template"
+          git push
 
       - name: Write SIGNAL.md
         env:
@@ -90,8 +91,8 @@ jobs:
           SIGNAL_EOF
 
           git add SIGNAL.md
-          git commit -m "Add project signal metadata" || true
-          git push || true
+          git commit -m "Add project signal metadata"
+          git push
 
       - name: Create issue and assign to Copilot
         env:
