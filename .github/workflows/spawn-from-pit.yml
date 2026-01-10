@@ -36,18 +36,23 @@ jobs:
 
           NEW_REPO="${LEGATO_ORG}/Lab.${PROJECT_NAME}.${SUFFIX}"
 
-          echo "Creating repository: ${NEW_REPO}"
+          # Check if repo already exists (idempotent)
+          if gh repo view "${NEW_REPO}" &>/dev/null; then
+            echo "Repository ${NEW_REPO} already exists, skipping creation"
+          else
+            echo "Creating repository: ${NEW_REPO}"
 
-          # Create the repository with README to ensure main branch exists
-          gh repo create "${NEW_REPO}" \
-            --public \
-            --add-readme \
-            --description "LEGATO project: ${PROJECT_NAME}"
+            # Create the repository with README to ensure main branch exists
+            gh repo create "${NEW_REPO}" \
+              --public \
+              --add-readme \
+              --description "LEGATO project: ${PROJECT_NAME}"
 
-          # Add topic tags for discoverability
-          gh repo edit "${NEW_REPO}" --add-topic "legato-lab" --add-topic "legato-chord"
+            # Add topic tags for discoverability
+            gh repo edit "${NEW_REPO}" --add-topic "legato-lab" --add-topic "legato-chord"
+          fi
 
-          # Clone the new repo
+          # Clone the repo
           gh repo clone "${NEW_REPO}" project-clone
           cd project-clone
 
@@ -55,15 +60,22 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+          # Configure git to use GitHub CLI for authentication
+          gh auth setup-git
+
           # Copy template files if they exist
           if [ -d "../templates/${PROJECT_TYPE}" ]; then
             cp -r "../templates/${PROJECT_TYPE}/." .
           fi
 
-          # Initial commit - fail the workflow if this doesn't work
+          # Commit template files if there are changes
           git add .
-          git commit -m "Initialize ${PROJECT_NAME} from LEGATO template"
-          git push
+          if git diff --cached --quiet; then
+            echo "No template changes to commit"
+          else
+            git commit -m "Initialize ${PROJECT_NAME} from LEGATO template"
+            git push
+          fi
 
       - name: Write SIGNAL.md
         env:
@@ -82,9 +94,13 @@ jobs:
 
           cd project-clone
 
-          # Configure git identity for commits
+          # Pull latest changes in case of rerun
+          git pull --rebase origin main || true
+
+          # Configure git identity and authentication
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          gh auth setup-git
 
           # Parse signal JSON and write SIGNAL.md
           cat > SIGNAL.md << 'SIGNAL_EOF'
@@ -98,9 +114,14 @@ jobs:
           - Type: ${{ github.event.client_payload.project_type }}
           SIGNAL_EOF
 
+          # Commit SIGNAL.md if there are changes
           git add SIGNAL.md
-          git commit -m "Add project signal metadata"
-          git push
+          if git diff --cached --quiet; then
+            echo "SIGNAL.md unchanged, skipping commit"
+          else
+            git commit -m "Add project signal metadata"
+            git push
+          fi
 
       - name: Create issue and assign to Copilot
         env:
@@ -120,20 +141,31 @@ jobs:
           REPO="${LEGATO_ORG}/Lab.${PROJECT_NAME}.${SUFFIX}"
           REPO_NAME="Lab.${PROJECT_NAME}.${SUFFIX}"
 
-          echo "Creating issue in ${REPO} using REST API..."
-
-          # Create issue using REST API (auto-creates labels)
-          ISSUE_RESPONSE=$(gh api "/repos/${REPO}/issues" \
-            -X POST \
+          # Check if "Initial Implementation" issue already exists (idempotent)
+          EXISTING_ISSUE=$(gh api "/repos/${REPO}/issues?state=all" \
             -H "Accept: application/vnd.github+json" \
-            -f title="Initial Implementation" \
-            -f body="${TASKER_BODY}" \
-            -f "labels[]=copilot")
+            --jq '.[] | select(.title == "Initial Implementation") | .number' | head -1)
 
-          ISSUE_NUMBER=$(echo "${ISSUE_RESPONSE}" | jq -r '.number')
-          ISSUE_URL=$(echo "${ISSUE_RESPONSE}" | jq -r '.html_url')
+          if [ -n "${EXISTING_ISSUE}" ]; then
+            echo "Issue 'Initial Implementation' already exists: #${EXISTING_ISSUE}"
+            ISSUE_NUMBER="${EXISTING_ISSUE}"
+            ISSUE_URL="https://github.com/${REPO}/issues/${ISSUE_NUMBER}"
+          else
+            echo "Creating issue in ${REPO} using REST API..."
 
-          echo "Issue created: #${ISSUE_NUMBER} - ${ISSUE_URL}"
+            # Create issue using REST API (auto-creates labels)
+            ISSUE_RESPONSE=$(gh api "/repos/${REPO}/issues" \
+              -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -f title="Initial Implementation" \
+              -f body="${TASKER_BODY}" \
+              -f "labels[]=copilot")
+
+            ISSUE_NUMBER=$(echo "${ISSUE_RESPONSE}" | jq -r '.number')
+            ISSUE_URL=$(echo "${ISSUE_RESPONSE}" | jq -r '.html_url')
+
+            echo "Issue created: #${ISSUE_NUMBER} - ${ISSUE_URL}"
+          fi
 
           # Wait for GitHub to fully process the issue
           sleep 2
