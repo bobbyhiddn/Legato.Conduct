@@ -243,12 +243,119 @@ def commit_knowledge(artifact: KnowledgeArtifact, library_repo: Optional[str] = 
     }
 
 
+def handle_append(thread: ClassifiedThread, target_entry_id: str, commit: bool = False) -> dict:
+    """Append content to an existing entry via Pit API.
+
+    Args:
+        thread: The classified thread with new content
+        target_entry_id: Entry ID to append to
+        commit: Whether to actually commit
+
+    Returns:
+        Result dict
+    """
+    import requests
+
+    if not commit:
+        return {
+            "action": "would_append",
+            "target_entry_id": target_entry_id,
+            "thread_id": thread.id,
+        }
+
+    pit_url = os.environ.get('PIT_URL', 'https://legato-pit.fly.dev')
+    token = os.environ.get('SYSTEM_PAT')
+
+    if not token:
+        raise RuntimeError("SYSTEM_PAT required for append")
+
+    response = requests.post(
+        f'{pit_url}/memory/api/append',
+        headers={
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+        },
+        json={
+            'entry_id': target_entry_id,
+            'content': thread.raw_text,
+            'source_transcript': thread.source_id,
+        },
+        timeout=30,
+    )
+
+    if response.ok:
+        return {
+            "action": "appended",
+            "target_entry_id": target_entry_id,
+            "thread_id": thread.id,
+        }
+    else:
+        raise RuntimeError(f"Append failed: {response.status_code} - {response.text}")
+
+
+def handle_queue_task(thread: ClassifiedThread, chord_repo: str, commit: bool = False) -> dict:
+    """Queue a task on an existing chord instead of creating a new one.
+
+    Args:
+        thread: The classified thread
+        chord_repo: The chord repo to queue the task on
+        commit: Whether to actually commit
+
+    Returns:
+        Result dict
+    """
+    import requests
+
+    if not commit:
+        return {
+            "action": "would_queue",
+            "chord_repo": chord_repo,
+            "thread_id": thread.id,
+        }
+
+    pit_url = os.environ.get('PIT_URL', 'https://legato-pit.fly.dev')
+    token = os.environ.get('SYSTEM_PAT')
+
+    if not token:
+        raise RuntimeError("SYSTEM_PAT required for queue task")
+
+    response = requests.post(
+        f'{pit_url}/memory/api/queue-task',
+        headers={
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json',
+        },
+        json={
+            'chord_repo': chord_repo,
+            'title': thread.knowledge_title or thread.chord_name or 'New task',
+            'description': thread.raw_text[:500],
+            'source_entry_id': None,  # This is a new thread, not an existing entry
+            'source_transcript': thread.source_id,
+        },
+        timeout=30,
+    )
+
+    if response.ok:
+        data = response.json()
+        return {
+            "action": "queued_task",
+            "chord_repo": chord_repo,
+            "issue_url": data.get('issue_url'),
+            "thread_id": thread.id,
+        }
+    else:
+        raise RuntimeError(f"Queue task failed: {response.status_code} - {response.text}")
+
+
 def process_routing(routing_file: str, commit: bool = False) -> list[dict]:
     """
     Process classified threads from a routing file.
 
-    All threads are KNOWLEDGE in the new ontology. Items with needs_chord=true
-    will have chord escalation fields in their frontmatter for Pit to detect.
+    Respects correlation_action from classification:
+    - CREATE: Create new note in Library
+    - APPEND: Append to existing note
+    - QUEUE: Queue task on existing chord (instead of new chord)
+    - SKIP: Skip processing (near-duplicate)
 
     Args:
         routing_file: Path to routing.json
@@ -266,6 +373,53 @@ def process_routing(routing_file: str, commit: bool = False) -> list[dict]:
         thread = ClassifiedThread.from_dict(item)
 
         try:
+            action = thread.correlation_action
+
+            # Handle SKIP - near-duplicate, don't process
+            if action == 'SKIP':
+                recommendation = None
+                for match in thread.correlation_matches:
+                    if 'recommendation' in match:
+                        recommendation = match['recommendation']
+                        break
+
+                print(f"Skipping {thread.id}: {recommendation.get('reason', 'duplicate') if recommendation else 'duplicate'}")
+                results.append({
+                    "action": "skipped",
+                    "thread_id": thread.id,
+                    "reason": recommendation.get('reason') if recommendation else "duplicate",
+                })
+                continue
+
+            # Handle APPEND - add to existing entry
+            if action == 'APPEND':
+                recommendation = None
+                for match in thread.correlation_matches:
+                    if 'recommendation' in match:
+                        recommendation = match['recommendation']
+                        break
+
+                if recommendation and recommendation.get('entry_id'):
+                    result = handle_append(thread, recommendation['entry_id'], commit)
+                    results.append(result)
+                    print(f"Appending {thread.id} to {recommendation['entry_id']}")
+                    continue
+
+            # Handle QUEUE - task on existing chord
+            if action == 'QUEUE':
+                recommendation = None
+                for match in thread.correlation_matches:
+                    if 'recommendation' in match:
+                        recommendation = match['recommendation']
+                        break
+
+                if recommendation and recommendation.get('chord_repo'):
+                    result = handle_queue_task(thread, recommendation['chord_repo'], commit)
+                    results.append(result)
+                    print(f"Queuing task on {recommendation['chord_repo']} for {thread.id}")
+                    continue
+
+            # Default: CREATE new entry
             artifact = extract_knowledge(thread)
 
             if commit:

@@ -255,12 +255,61 @@ Return format:
     return threads
 
 
-def classify_threads(threads: list[dict]) -> list[ClassifiedThread]:
+def check_correlation(thread: dict, pit_url: str = None, token: str = None) -> dict:
+    """Check for similar existing entries in Pit.
+
+    Args:
+        thread: Parsed thread dictionary
+        pit_url: Base URL for Pit API
+        token: Authentication token
+
+    Returns:
+        Correlation result with action recommendation
     """
-    Classify parsed threads into KNOWLEDGE or PROJECT types.
+    import os
+    import requests
+
+    pit_url = pit_url or os.environ.get('PIT_URL', 'https://legato-pit.fly.dev')
+    token = token or os.environ.get('SYSTEM_PAT')
+
+    if not token:
+        print("Warning: No SYSTEM_PAT, skipping correlation check", file=sys.stderr)
+        return {'action': 'CREATE', 'score': 0.0, 'matches': []}
+
+    try:
+        response = requests.post(
+            f'{pit_url}/memory/api/correlate',
+            headers={
+                'Authorization': f'Bearer {token}',
+                'Content-Type': 'application/json',
+            },
+            json={
+                'title': thread.get('summary', ''),
+                'content': thread.get('text', thread.get('raw_text', '')),
+                'key_phrases': thread.get('key_phrases', []),
+                'needs_chord': thread.get('needs_chord', False),
+            },
+            timeout=30,
+        )
+
+        if response.ok:
+            return response.json()
+        else:
+            print(f"Correlation check failed: {response.status_code}", file=sys.stderr)
+            return {'action': 'CREATE', 'score': 0.0, 'matches': []}
+
+    except Exception as e:
+        print(f"Correlation check error: {e}", file=sys.stderr)
+        return {'action': 'CREATE', 'score': 0.0, 'matches': []}
+
+
+def classify_threads(threads: list[dict], skip_correlation: bool = False) -> list[ClassifiedThread]:
+    """
+    Classify parsed threads into KNOWLEDGE types with correlation checking.
 
     Args:
         threads: List of parsed thread dictionaries
+        skip_correlation: If True, skip Pit correlation check (for offline/testing)
 
     Returns:
         List of ClassifiedThread objects
@@ -302,6 +351,26 @@ def classify_threads(threads: list[dict]) -> list[ClassifiedThread]:
         classification["parsed_at"] = thread.get("parsed_at")
 
         classified = ClassifiedThread.from_dict(classification)
+
+        # Run correlation check against Pit
+        if not skip_correlation:
+            correlation = check_correlation({
+                'summary': classified.knowledge_title,
+                'text': classified.raw_text,
+                'key_phrases': classified.key_phrases,
+                'needs_chord': classified.needs_chord,
+            })
+
+            classified.correlation_score = correlation.get('score', 0.0)
+            classified.correlation_matches = correlation.get('matches', [])
+            classified.correlation_action = correlation.get('action', 'CREATE')
+
+            # Store recommendation for knowledge.py to handle
+            if correlation.get('recommendation'):
+                classified.correlation_matches.insert(0, {
+                    'recommendation': correlation['recommendation']
+                })
+
         results.append(classified)
 
     return results
