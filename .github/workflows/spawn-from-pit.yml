@@ -172,28 +172,18 @@ jobs:
 
           echo "Copilot ID: ${COPILOT_ID}"
 
-          # Assign to Copilot using GraphQL with proper JSON
+          # Assign to Copilot using GraphQL - pipe full JSON request
           echo "Assigning issue to Copilot..."
-          ASSIGN_RESULT=$(gh api graphql \
-            --raw-field query='
-              mutation AssignToCopilot($issueId: ID!, $actorIds: [ID!]!) {
-                replaceActorsForAssignable(input: {
-                  assignableId: $issueId,
-                  actorIds: $actorIds
-                }) {
-                  assignable {
-                    ... on Issue {
-                      assignees(first: 5) {
-                        nodes {
-                          login
-                        }
-                      }
-                    }
-                  }
-                }
+          ASSIGN_RESULT=$(jq -n \
+            --arg issueId "${ISSUE_ID}" \
+            --arg copilotId "${COPILOT_ID}" \
+            '{
+              query: "mutation AssignToCopilot($issueId: ID!, $actorIds: [ID!]!) { replaceActorsForAssignable(input: { assignableId: $issueId, actorIds: $actorIds }) { assignable { ... on Issue { assignees(first: 5) { nodes { login } } } } } }",
+              variables: {
+                issueId: $issueId,
+                actorIds: [$copilotId]
               }
-            ' \
-            --raw-field variables="$(jq -n --arg issueId "${ISSUE_ID}" --arg copilotId "${COPILOT_ID}" '{issueId: $issueId, actorIds: [$copilotId]}')")
+            }' | gh api graphql --input -)
 
           # Verify assignment
           ASSIGNEES=$(echo "${ASSIGN_RESULT}" | jq -r '.data.replaceActorsForAssignable.assignable.assignees.nodes[].login' 2>/dev/null || echo "")
