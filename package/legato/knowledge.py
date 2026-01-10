@@ -177,6 +177,101 @@ def extract_knowledge(thread: ClassifiedThread) -> KnowledgeArtifact:
     )
 
 
+def group_chord_candidates(threads: list[ClassifiedThread], similarity_threshold: float = 0.5) -> dict:
+    """
+    Group threads that need chords by domain_tag similarity.
+
+    When multiple threads in the same transcript discuss related topics,
+    they should spawn as a single multi-note chord rather than separate chords.
+
+    Args:
+        threads: List of classified threads
+        similarity_threshold: Minimum Jaccard similarity to group (0.0-1.0)
+
+    Returns:
+        Dict mapping group_id to list of threads:
+        {
+            "group-1": [thread1, thread2],  # These share enough domain_tags
+            "group-2": [thread3],           # This is distinct
+        }
+    """
+    # Filter to only chord candidates
+    chord_threads = [t for t in threads if t.needs_chord]
+
+    if not chord_threads:
+        return {}
+
+    if len(chord_threads) == 1:
+        return {"group-1": chord_threads}
+
+    # Calculate pairwise similarity based on domain_tags
+    def jaccard_similarity(tags1: list, tags2: list) -> float:
+        if not tags1 or not tags2:
+            return 0.0
+        set1, set2 = set(tags1), set(tags2)
+        intersection = len(set1 & set2)
+        union = len(set1 | set2)
+        return intersection / union if union > 0 else 0.0
+
+    # Simple greedy clustering
+    groups = []
+    used = set()
+
+    for i, thread in enumerate(chord_threads):
+        if i in used:
+            continue
+
+        # Start new group with this thread
+        group = [thread]
+        used.add(i)
+
+        # Find similar threads
+        for j, other in enumerate(chord_threads):
+            if j in used:
+                continue
+
+            similarity = jaccard_similarity(thread.domain_tags, other.domain_tags)
+            if similarity >= similarity_threshold:
+                group.append(other)
+                used.add(j)
+
+        groups.append(group)
+
+    # Convert to dict with group IDs
+    result = {}
+    for idx, group in enumerate(groups, 1):
+        group_id = f"group-{idx}"
+
+        # Generate a combined chord name from the group
+        if len(group) > 1:
+            # Use the most common domain tags
+            all_tags = []
+            for t in group:
+                all_tags.extend(t.domain_tags or [])
+
+            # Get most frequent tag as basis for name
+            if all_tags:
+                from collections import Counter
+                common_tag = Counter(all_tags).most_common(1)[0][0]
+                chord_name = f"{common_tag}-multi"
+            else:
+                chord_name = f"multi-chord-{idx}"
+
+            # Update all threads in group with shared chord name and related IDs
+            thread_ids = [t.id for t in group]
+            for t in group:
+                t.chord_name = chord_name
+                # Add other thread IDs as related
+                t.correlation_matches.append({
+                    "grouped_threads": [tid for tid in thread_ids if tid != t.id],
+                    "group_reason": "domain_tag_similarity"
+                })
+
+        result[group_id] = group
+
+    return result
+
+
 def commit_knowledge(artifact: KnowledgeArtifact, library_repo: Optional[str] = None) -> dict:
     """
     Commit a knowledge artifact to the Library repository.
@@ -357,6 +452,9 @@ def process_routing(routing_file: str, commit: bool = False) -> list[dict]:
     - QUEUE: Queue task on existing chord (instead of new chord)
     - SKIP: Skip processing (near-duplicate)
 
+    Also groups related chord candidates so multiple related notes
+    spawn as a single multi-note chord rather than separate chords.
+
     Args:
         routing_file: Path to routing.json
         commit: Whether to commit to Library
@@ -367,10 +465,20 @@ def process_routing(routing_file: str, commit: bool = False) -> list[dict]:
     with open(routing_file) as f:
         routing = json.load(f)
 
+    # Parse all threads first
+    threads = [ClassifiedThread.from_dict(item) for item in routing]
+
+    # Group chord candidates by domain_tag similarity
+    # This modifies threads in-place to share chord_name
+    chord_groups = group_chord_candidates(threads)
+    if chord_groups:
+        multi_groups = [g for g in chord_groups.values() if len(g) > 1]
+        if multi_groups:
+            print(f"Grouped {sum(len(g) for g in multi_groups)} chord candidates into {len(multi_groups)} multi-note chords")
+
     results = []
 
-    for item in routing:
-        thread = ClassifiedThread.from_dict(item)
+    for thread in threads:
 
         try:
             action = thread.correlation_action
