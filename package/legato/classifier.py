@@ -9,6 +9,7 @@ import os
 import sys
 import json
 import argparse
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -250,6 +251,118 @@ def repair_truncated_json(text: str) -> str:
     return text
 
 
+# =============================================================================
+# Embedding-based Classification Utilities
+# =============================================================================
+
+def get_embeddings(texts: list[str], model: str = "text-embedding-3-small") -> list[list[float]]:
+    """Generate embeddings for a list of texts using OpenAI API.
+
+    Args:
+        texts: List of texts to embed
+        model: OpenAI embedding model to use
+
+    Returns:
+        List of embedding vectors (each is a list of floats)
+    """
+    try:
+        import openai
+    except ImportError:
+        print("Warning: openai package not installed, skipping embeddings", file=sys.stderr)
+        return []
+
+    api_key = os.environ.get('OPENAI_API_KEY')
+    if not api_key:
+        print("Warning: No OPENAI_API_KEY, skipping embeddings", file=sys.stderr)
+        return []
+
+    try:
+        client = openai.OpenAI(api_key=api_key)
+        response = client.embeddings.create(
+            model=model,
+            input=texts
+        )
+        return [item.embedding for item in response.data]
+    except Exception as e:
+        print(f"Warning: Embedding generation failed: {e}", file=sys.stderr)
+        return []
+
+
+def cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
+    """Compute cosine similarity between two vectors.
+
+    Args:
+        vec1: First vector
+        vec2: Second vector
+
+    Returns:
+        Cosine similarity score between -1 and 1
+    """
+    if not vec1 or not vec2 or len(vec1) != len(vec2):
+        return 0.0
+
+    dot_product = sum(a * b for a, b in zip(vec1, vec2))
+    norm1 = math.sqrt(sum(a * a for a in vec1))
+    norm2 = math.sqrt(sum(b * b for b in vec2))
+
+    if norm1 == 0 or norm2 == 0:
+        return 0.0
+
+    return dot_product / (norm1 * norm2)
+
+
+def compute_category_similarities(
+    thread_text: str,
+    category_definitions: list[dict],
+    category_embeddings: list[list[float]] = None
+) -> list[dict]:
+    """Compute similarity scores between a thread and all categories.
+
+    Args:
+        thread_text: The text content of the thread
+        category_definitions: List of category dicts with name, description
+        category_embeddings: Pre-computed category embeddings (optional, will compute if not provided)
+
+    Returns:
+        List of dicts with category name and similarity score, sorted by score descending
+    """
+    if not category_definitions:
+        return []
+
+    # Get or compute category embeddings
+    if not category_embeddings:
+        category_texts = [
+            f"{cat.get('display_name', cat.get('name', ''))}: {cat.get('description', '')}"
+            for cat in category_definitions
+        ]
+        category_embeddings = get_embeddings(category_texts)
+
+    if not category_embeddings:
+        return []
+
+    # Get thread embedding
+    thread_embeddings = get_embeddings([thread_text])
+    if not thread_embeddings:
+        return []
+
+    thread_embedding = thread_embeddings[0]
+
+    # Compute similarities
+    similarities = []
+    for i, cat in enumerate(category_definitions):
+        if i < len(category_embeddings):
+            score = cosine_similarity(thread_embedding, category_embeddings[i])
+            similarities.append({
+                "name": cat.get("name", ""),
+                "display_name": cat.get("display_name", cat.get("name", "")),
+                "score": round(score, 4)
+            })
+
+    # Sort by score descending
+    similarities.sort(key=lambda x: x["score"], reverse=True)
+    return similarities
+
+
 def parse_threads(transcript: str, source_id: Optional[str] = None) -> list[dict]:
     """
     Parse transcript into threads using Claude.
@@ -462,11 +575,15 @@ def report_pre_classify_stage(
         return False
 
 
-def build_dynamic_classifier_prompt(category_definitions: list[dict]) -> str:
-    """Build a classifier prompt with dynamic category definitions.
+def build_dynamic_classifier_prompt(
+    category_definitions: list[dict],
+    similarity_scores: list[dict] = None
+) -> str:
+    """Build a classifier prompt with dynamic category definitions and similarity scores.
 
     Args:
         category_definitions: List of category dicts with name, display_name, description
+        similarity_scores: Optional list of dicts with category name and similarity score
 
     Returns:
         Complete classifier prompt string
@@ -481,6 +598,22 @@ def build_dynamic_classifier_prompt(category_definitions: list[dict]) -> str:
     categories_block = "\n".join(category_lines)
     category_names = [cat['name'].lower() for cat in category_definitions]
 
+    # Build similarity guidance block if scores provided
+    similarity_block = ""
+    if similarity_scores:
+        similarity_lines = []
+        for s in similarity_scores[:5]:  # Top 5 matches
+            score_pct = int(s['score'] * 100)
+            similarity_lines.append(f"   - {s['name'].upper()}: {score_pct}% semantic match")
+        similarity_block = f"""
+## Semantic Analysis (Embedding Similarity)
+
+The following shows how semantically similar this thread is to each category based on embedding comparison:
+{chr(10).join(similarity_lines)}
+
+**Use these scores as a strong signal.** The highest-scoring category is likely the best fit unless the content clearly contradicts it.
+"""
+
     return f"""# Thread Classification Prompt
 
 You are classifying segments of a voice transcript for the LEGATO system.
@@ -488,7 +621,7 @@ You are classifying segments of a voice transcript for the LEGATO system.
 ## Core Principle
 
 **Everything becomes a Note first.** All threads are classified as KNOWLEDGE and stored in the Library. If a thread describes something that needs implementation, it is flagged with `needs_chord: true` for escalation.
-
+{similarity_block}
 ## Your Task
 
 For each thread:
@@ -531,6 +664,9 @@ def classify_threads(threads: list[dict], skip_correlation: bool = False,
     """
     Classify parsed threads into KNOWLEDGE types with correlation checking.
 
+    Uses embedding-based similarity scores to guide Claude's classification when
+    category definitions are provided.
+
     Args:
         threads: List of parsed thread dictionaries
         skip_correlation: If True, skip Pit correlation check (for offline/testing)
@@ -539,19 +675,47 @@ def classify_threads(threads: list[dict], skip_correlation: bool = False,
     Returns:
         List of ClassifiedThread objects
     """
-    # Use dynamic prompt if category definitions provided, else static prompt
+    # Pre-compute category embeddings once (for efficiency)
+    category_embeddings = None
     if category_definitions:
-        classifier_prompt = build_dynamic_classifier_prompt(category_definitions)
         valid_categories = {cat['name'].lower() for cat in category_definitions}
         print(f"Using dynamic categories: {', '.join(valid_categories)}", file=sys.stderr)
+
+        # Generate embeddings for all categories
+        category_texts = [
+            f"{cat.get('display_name', cat.get('name', ''))}: {cat.get('description', '')}"
+            for cat in category_definitions
+        ]
+        category_embeddings = get_embeddings(category_texts)
+        if category_embeddings:
+            print(f"Generated embeddings for {len(category_embeddings)} categories", file=sys.stderr)
+        else:
+            print("Warning: Could not generate category embeddings, proceeding without similarity scores", file=sys.stderr)
     else:
-        classifier_prompt = load_prompt("classifier")
         valid_categories = {c.value for c in KnowledgeCategory}
 
     results = []
 
     for thread in threads:
         thread_text = thread.get("text", thread.get("raw_text", ""))
+
+        # Compute similarity scores if we have category embeddings
+        similarity_scores = None
+        if category_definitions and category_embeddings:
+            similarity_scores = compute_category_similarities(
+                thread_text,
+                category_definitions,
+                category_embeddings
+            )
+            if similarity_scores:
+                top_match = similarity_scores[0]
+                print(f"  Thread {thread.get('id', '?')}: Top match = {top_match['name']} ({int(top_match['score']*100)}%)", file=sys.stderr)
+
+        # Build prompt with similarity guidance
+        if category_definitions:
+            classifier_prompt = build_dynamic_classifier_prompt(category_definitions, similarity_scores)
+        else:
+            classifier_prompt = load_prompt("classifier")
 
         response, _ = call_claude(classifier_prompt, thread_text)
 

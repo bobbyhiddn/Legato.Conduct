@@ -53,9 +53,49 @@ jobs:
           name: parsed-threads
           path: threads.json
 
-  classify:
+  pre-classify:
     runs-on: ubuntu-latest
     needs: parse
+    outputs:
+      preclassify_json: ${{ steps.preclassify.outputs.preclassify_json }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download parsed threads
+        uses: actions/download-artifact@v4
+        with:
+          name: parsed-threads
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install -e .
+
+      - name: Report pre-classify stage to Pit
+        id: preclassify
+        env:
+          SYSTEM_PAT: ${{ secrets.SYSTEM_PAT }}
+          PIT_URL: https://legato-pit.fly.dev
+          CATEGORY_DEFINITIONS: ${{ toJson(github.event.client_payload.category_definitions) }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: |
+          python -m legato.classifier --phase pre-classify --input threads.json --output preclassify.json
+          echo "preclassify_json=$(cat preclassify.json | jq -c .)" >> $GITHUB_OUTPUT
+          echo "--- Pre-classify Output ---"
+          cat preclassify.json | jq .
+
+      - name: Upload pre-classify data
+        uses: actions/upload-artifact@v4
+        with:
+          name: preclassify-data
+          path: preclassify.json
+
+  classify:
+    runs-on: ubuntu-latest
+    needs: pre-classify
     outputs:
       routing_json: ${{ steps.classify.outputs.routing_json }}
     steps:
@@ -82,7 +122,6 @@ jobs:
           SYSTEM_PAT: ${{ secrets.SYSTEM_PAT }}
           PIT_URL: https://legato-pit.fly.dev
           CATEGORY_DEFINITIONS: ${{ toJson(github.event.client_payload.category_definitions) }}
-          GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           python -m legato.classifier --phase classify --input threads.json --output routing.json
           echo "routing_json=$(cat routing.json | jq -c .)" >> $GITHUB_OUTPUT
