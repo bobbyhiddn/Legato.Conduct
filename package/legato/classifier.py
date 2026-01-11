@@ -969,9 +969,9 @@ def main():
     parser = argparse.ArgumentParser(description="LEGATO Classification Engine")
     parser.add_argument(
         "--phase",
-        choices=["parse", "classify", "full"],
+        choices=["parse", "pre-classify", "classify", "full"],
         default="full",
-        help="Processing phase"
+        help="Processing phase: parse → pre-classify → classify"
     )
     parser.add_argument(
         "--input",
@@ -1006,10 +1006,10 @@ def main():
             print(f"Parsed {len(threads)} threads")
             return
 
-    if args.phase in ("classify", "full"):
-        if args.phase == "classify":
-            with open(args.input) as f:
-                threads = json.load(f)
+    # Pre-classify phase: report categories and motif previews to Pit
+    if args.phase == "pre-classify":
+        with open(args.input) as f:
+            threads = json.load(f)
 
         # Load category definitions from environment (sent by Pit)
         category_definitions = None
@@ -1024,11 +1024,59 @@ def main():
         # Report pre-classify stage to Pit for debug visibility
         run_id = os.environ.get("GITHUB_RUN_ID")
         if run_id:
-            report_pre_classify_stage(
+            success = report_pre_classify_stage(
                 run_id=run_id,
                 threads=threads,
                 category_definitions=category_definitions
             )
+            if not success:
+                print("Warning: Failed to report pre-classify stage to Pit", file=sys.stderr)
+        else:
+            print("Warning: No GITHUB_RUN_ID, skipping pre-classify report", file=sys.stderr)
+
+        # Output the pre-classify data for debugging/inspection
+        categories = category_definitions if category_definitions else DEFAULT_CATEGORIES
+        output = {
+            "stage": "pre-classify",
+            "run_id": run_id,
+            "categories": [
+                {
+                    "name": cat.get("name", ""),
+                    "display_name": cat.get("display_name", cat.get("name", "")),
+                    "description": cat.get("description", "")
+                }
+                for cat in categories
+            ],
+            "motifs": [
+                {
+                    "id": thread.get("id", ""),
+                    "title": thread.get("summary", ""),
+                    "preview": thread.get("text", thread.get("raw_text", ""))[:200]
+                }
+                for thread in threads
+            ]
+        }
+
+        with open(args.output, "w") as f:
+            json.dump(output, f, indent=2)
+
+        print(f"Pre-classify stage: {len(output['categories'])} categories, {len(output['motifs'])} motifs")
+        return
+
+    if args.phase in ("classify", "full"):
+        if args.phase == "classify":
+            with open(args.input) as f:
+                threads = json.load(f)
+
+        # Load category definitions from environment (sent by Pit)
+        category_definitions = None
+        if os.environ.get("CATEGORY_DEFINITIONS"):
+            try:
+                category_definitions = json.loads(os.environ["CATEGORY_DEFINITIONS"])
+                if category_definitions:
+                    print(f"Loaded {len(category_definitions)} category definitions from Pit", file=sys.stderr)
+            except json.JSONDecodeError as e:
+                print(f"Warning: Failed to parse CATEGORY_DEFINITIONS: {e}", file=sys.stderr)
 
         classified = classify_threads(threads, category_definitions=category_definitions)
 
