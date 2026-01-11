@@ -14,7 +14,7 @@ import base64
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from .classifier import ClassifiedThread, ThreadType, KnowledgeCategory, ChordScope
 
@@ -25,7 +25,7 @@ class KnowledgeArtifact:
 
     id: str
     title: str
-    category: KnowledgeCategory
+    category: Union[KnowledgeCategory, str]  # Can be enum or string for dynamic categories
     content: str
     domain_tags: list = field(default_factory=list)
     key_phrases: list = field(default_factory=list)
@@ -39,6 +39,13 @@ class KnowledgeArtifact:
     chord_name: Optional[str] = None
     chord_scope: Optional[str] = None  # "note" or "chord"
 
+    @property
+    def category_value(self) -> str:
+        """Get the category value as a string, handling both enum and string types."""
+        if isinstance(self.category, str):
+            return self.category
+        return self.category.value
+
     def to_markdown(self) -> str:
         """Convert to markdown format for Library."""
         created = self.created or datetime.utcnow().isoformat() + "Z"
@@ -47,7 +54,7 @@ class KnowledgeArtifact:
             "---",
             f"id: {self.id}",
             f'title: "{self.title}"',
-            f"category: {self.category.value}",
+            f"category: {self.category_value}",
             f"created: {created}",
             f"source_transcript: {self.source_transcript or 'unknown'}",
             f"domain_tags: {json.dumps(self.domain_tags)}",
@@ -74,7 +81,7 @@ class KnowledgeArtifact:
         """Get the file path for this artifact."""
         date = datetime.utcnow().strftime("%Y-%m-%d")
         slug = self.id.split(".")[-1]
-        return f"{self.category.value}s/{date}-{slug}.md"
+        return f"{self.category_value}s/{date}-{slug}.md"
 
 
 def load_prompt(prompt_name: str) -> str:
@@ -123,9 +130,12 @@ def extract_knowledge(thread: ClassifiedThread) -> KnowledgeArtifact:
     extractor_prompt = load_prompt("knowledge-extractor")
 
     # Prepare input for Claude
+    # Handle both enum and string categories
+    cat = thread.knowledge_category
+    cat_value = cat.value if hasattr(cat, 'value') else (cat if cat else "glimmer")
     input_data = {
         "thread_id": thread.id,
-        "category": thread.knowledge_category.value if thread.knowledge_category else "glimmer",
+        "category": cat_value,
         "title": thread.knowledge_title or "Untitled",
         "text": thread.raw_text,
         "domain_tags": thread.domain_tags,
@@ -154,11 +164,12 @@ def extract_knowledge(thread: ClassifiedThread) -> KnowledgeArtifact:
 
     # Generate artifact ID
     category = thread.knowledge_category or KnowledgeCategory.GLIMMER
+    category_str = category.value if hasattr(category, 'value') else category
     slug = (thread.knowledge_title or thread.chord_name or thread.id).lower()
     slug = "".join(c if c.isalnum() or c == "-" else "-" for c in slug)
     slug = "-".join(filter(None, slug.split("-")))[:50]
 
-    artifact_id = f"library.{category.value}s.{slug}"
+    artifact_id = f"library.{category_str}s.{slug}"
 
     return KnowledgeArtifact(
         id=artifact_id,
@@ -291,7 +302,7 @@ def commit_knowledge(artifact: KnowledgeArtifact, library_repo: Optional[str] = 
 
     content = artifact.to_markdown()
     file_path = artifact.get_path()
-    commit_msg = f"Add {artifact.category.value}: {artifact.title}"
+    commit_msg = f"Add {artifact.category_value}: {artifact.title}"
 
     # Encode content
     content_b64 = base64.b64encode(content.encode()).decode()
@@ -487,6 +498,18 @@ def process_routing(routing_file: str, commit: bool = False) -> list[dict]:
     with open(routing_file) as f:
         routing = json.load(f)
 
+    # Load category definitions from environment (for dynamic category support)
+    # This mirrors what the classifier does so we recognize custom categories
+    valid_categories = None
+    if os.environ.get("CATEGORY_DEFINITIONS"):
+        try:
+            category_definitions = json.loads(os.environ["CATEGORY_DEFINITIONS"])
+            if category_definitions:
+                valid_categories = {cat['name'].lower() for cat in category_definitions}
+                print(f"Loaded {len(valid_categories)} valid categories from environment", file=sys.stderr)
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"Warning: Failed to parse CATEGORY_DEFINITIONS: {e}", file=sys.stderr)
+
     # Handle both formats:
     # - New format: dict with 'threads' key (from classifier with chord_groups)
     # - Old format: plain list of threads
@@ -505,7 +528,7 @@ def process_routing(routing_file: str, commit: bool = False) -> list[dict]:
             print(f"Warning: Skipping invalid item at index {i}: expected dict, got {type(item).__name__}: {repr(item)[:80]}", file=sys.stderr)
             continue
         try:
-            threads.append(ClassifiedThread.from_dict(item))
+            threads.append(ClassifiedThread.from_dict(item, valid_categories))
         except (TypeError, ValueError) as e:
             print(f"Warning: Skipping invalid item at index {i}: {e}", file=sys.stderr)
             continue
