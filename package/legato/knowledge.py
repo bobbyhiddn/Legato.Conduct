@@ -487,9 +487,16 @@ def process_routing(routing_file: str, commit: bool = False) -> list[dict]:
     with open(routing_file) as f:
         routing = json.load(f)
 
-    # Validate routing structure
-    if not isinstance(routing, list):
-        raise ValueError(f"routing.json must be a list, got {type(routing).__name__}")
+    # Handle both formats:
+    # - New format: dict with 'threads' key (from classifier with chord_groups)
+    # - Old format: plain list of threads
+    if isinstance(routing, dict):
+        if 'threads' in routing:
+            routing = routing['threads']
+        else:
+            raise ValueError(f"routing.json dict must have 'threads' key, got keys: {list(routing.keys())}")
+    elif not isinstance(routing, list):
+        raise ValueError(f"routing.json must be a list or dict with 'threads', got {type(routing).__name__}")
 
     # Parse all threads, filtering out invalid items
     threads = []
