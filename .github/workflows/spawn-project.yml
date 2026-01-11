@@ -44,7 +44,7 @@ jobs:
             SUFFIX="Chord"
           fi
 
-          NEW_REPO="${LEGATO_ORG}/Lab.${PROJECT_NAME}.${SUFFIX}"
+          NEW_REPO="${LEGATO_ORG}/${PROJECT_NAME}.${SUFFIX}"
 
           # Create the repository
           gh repo create "${NEW_REPO}" \
@@ -129,7 +129,7 @@ jobs:
             SUFFIX="Chord"
           fi
 
-          REPO="${LEGATO_ORG}/Lab.${PROJECT_NAME}.${SUFFIX}"
+          REPO="${LEGATO_ORG}/${PROJECT_NAME}.${SUFFIX}"
 
           ISSUE_URL=$(gh issue create \
             --repo "${REPO}" \
