@@ -357,6 +357,111 @@ def check_correlation(thread: dict, pit_url: str = None, token: str = None) -> d
         return {'action': 'CREATE', 'score': 0.0, 'matches': []}
 
 
+def report_pre_classify_stage(
+    run_id: str,
+    threads: list[dict],
+    category_definitions: list[dict] = None,
+    pit_url: str = None,
+    token: str = None
+) -> bool:
+    """Report pre-classify stage to Pit's pipeline status endpoint.
+
+    Posts available categories and motif previews before classification begins.
+    This enables debug visibility in Pit for the classification pipeline.
+
+    Args:
+        run_id: GitHub workflow run ID
+        threads: List of parsed thread dictionaries
+        category_definitions: Category definitions (uses DEFAULT_CATEGORIES if None)
+        pit_url: Base URL for Pit API
+        token: Authentication token (SYSTEM_PAT)
+
+    Returns:
+        True if report was sent successfully, False otherwise
+    """
+    import requests
+
+    pit_url = pit_url or os.environ.get('PIT_URL', 'https://legato-pit.fly.dev')
+    token = token or os.environ.get('SYSTEM_PAT')
+
+    if not token:
+        print("Warning: No SYSTEM_PAT, skipping pre-classify stage report", file=sys.stderr)
+        return False
+
+    if not run_id:
+        print("Warning: No run_id provided, skipping pre-classify stage report", file=sys.stderr)
+        return False
+
+    # Use provided categories or fall back to defaults
+    categories = category_definitions if category_definitions else DEFAULT_CATEGORIES
+
+    # Format categories for the API
+    formatted_categories = [
+        {
+            "name": cat.get("name", ""),
+            "display_name": cat.get("display_name", cat.get("name", "")),
+            "description": cat.get("description", "")
+        }
+        for cat in categories
+    ]
+
+    # Format motifs (threads) with previews
+    motifs = []
+    for thread in threads:
+        thread_id = thread.get("id", "")
+        content = thread.get("text", thread.get("raw_text", ""))
+        preview = content[:200] if content else ""
+
+        motif = {
+            "id": thread_id,
+            "preview": preview
+        }
+
+        # Add title if available (from summary field)
+        if thread.get("summary"):
+            motif["title"] = thread["summary"]
+
+        motifs.append(motif)
+
+    # Build the request payload
+    payload = {
+        "run_id": str(run_id),
+        "stage": "pre-classify",
+        "status": "started",
+        "details": {
+            "categories": formatted_categories,
+            "motifs": motifs
+        }
+    }
+
+    try:
+        response = requests.post(
+            f'{pit_url}/memory/api/pipeline/status',
+            headers={
+                'Authorization': f'Bearer {token}',
+                'Content-Type': 'application/json',
+            },
+            json=payload,
+            timeout=30,
+        )
+
+        if response.ok:
+            result = response.json()
+            if result.get('success'):
+                print(f"Pre-classify stage reported: {len(formatted_categories)} categories, {len(motifs)} motifs", file=sys.stderr)
+                return True
+            else:
+                print(f"Pre-classify stage report failed: {result.get('message', 'Unknown error')}", file=sys.stderr)
+                return False
+        else:
+            print(f"Pre-classify stage report failed: HTTP {response.status_code}", file=sys.stderr)
+            return False
+
+    except Exception as e:
+        print(f"Pre-classify stage report error: {e}", file=sys.stderr)
+        return False
+
+
 def build_dynamic_classifier_prompt(category_definitions: list[dict]) -> str:
     """Build a classifier prompt with dynamic category definitions.
 
@@ -751,6 +856,15 @@ def main():
                     print(f"Loaded {len(category_definitions)} category definitions from Pit", file=sys.stderr)
             except json.JSONDecodeError as e:
                 print(f"Warning: Failed to parse CATEGORY_DEFINITIONS: {e}", file=sys.stderr)
+
+        # Report pre-classify stage to Pit for debug visibility
+        run_id = os.environ.get("GITHUB_RUN_ID")
+        if run_id:
+            report_pre_classify_stage(
+                run_id=run_id,
+                threads=threads,
+                category_definitions=category_definitions
+            )
 
         classified = classify_threads(threads, category_definitions=category_definitions)
 
