@@ -160,6 +160,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GH_TOKEN: ${{ secrets.LIBRARY_PAT }}
           LIBRARY_REPO: ${{ github.repository_owner }}/Legato.Library
+          CATEGORY_DEFINITIONS: ${{ toJson(github.event.client_payload.category_definitions) }}
         run: |
           python -m legato.knowledge --input routing.json --commit
 
