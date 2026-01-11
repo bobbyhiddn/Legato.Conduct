@@ -170,7 +170,7 @@ def extract_knowledge(thread: ClassifiedThread) -> KnowledgeArtifact:
         source_transcript=thread.source_id,
         created=datetime.utcnow().isoformat() + "Z",
         correlation_score=thread.correlation_score,
-        related=[m.get("signal_id") for m in thread.correlation_matches if m.get("score", 0) > 0.5],
+        related=[m.get("signal_id") for m in thread.correlation_matches if isinstance(m, dict) and m.get("score", 0) > 0.5],
         needs_chord=thread.needs_chord,
         chord_name=thread.chord_name,
         chord_scope=thread.chord_scope.value if thread.chord_scope else None,
@@ -442,6 +442,28 @@ def handle_queue_task(thread: ClassifiedThread, chord_repo: str, commit: bool = 
         raise RuntimeError(f"Queue task failed: {response.status_code} - {response.text}")
 
 
+def get_recommendation(thread: ClassifiedThread) -> Optional[dict]:
+    """Safely extract recommendation from correlation_matches.
+
+    correlation_matches can contain various types of items:
+    - Signal dicts with signal_id, score, title, path
+    - Recommendation dicts with 'recommendation' key
+    - Grouped thread dicts with 'grouped_threads' key
+    - Potentially malformed items (strings, None, etc.)
+
+    Returns the first valid recommendation dict, or None.
+    """
+    for match in thread.correlation_matches:
+        # Skip non-dict items
+        if not isinstance(match, dict):
+            continue
+        # Look for recommendation key
+        rec = match.get('recommendation')
+        if isinstance(rec, dict):
+            return rec
+    return None
+
+
 def process_routing(routing_file: str, commit: bool = False) -> list[dict]:
     """
     Process classified threads from a routing file.
@@ -465,8 +487,25 @@ def process_routing(routing_file: str, commit: bool = False) -> list[dict]:
     with open(routing_file) as f:
         routing = json.load(f)
 
-    # Parse all threads first
-    threads = [ClassifiedThread.from_dict(item) for item in routing]
+    # Validate routing structure
+    if not isinstance(routing, list):
+        raise ValueError(f"routing.json must be a list, got {type(routing).__name__}")
+
+    # Parse all threads, filtering out invalid items
+    threads = []
+    for i, item in enumerate(routing):
+        if not isinstance(item, dict):
+            print(f"Warning: Skipping invalid item at index {i}: expected dict, got {type(item).__name__}: {repr(item)[:80]}", file=sys.stderr)
+            continue
+        try:
+            threads.append(ClassifiedThread.from_dict(item))
+        except (TypeError, ValueError) as e:
+            print(f"Warning: Skipping invalid item at index {i}: {e}", file=sys.stderr)
+            continue
+
+    if not threads:
+        print("Warning: No valid threads found in routing.json", file=sys.stderr)
+        return []
 
     # Group chord candidates by domain_tag similarity
     # This modifies threads in-place to share chord_name
@@ -485,28 +524,19 @@ def process_routing(routing_file: str, commit: bool = False) -> list[dict]:
 
             # Handle SKIP - near-duplicate, don't process
             if action == 'SKIP':
-                recommendation = None
-                for match in thread.correlation_matches:
-                    if 'recommendation' in match:
-                        recommendation = match['recommendation']
-                        break
-
-                print(f"Skipping {thread.id}: {recommendation.get('reason', 'duplicate') if recommendation else 'duplicate'}")
+                recommendation = get_recommendation(thread)
+                reason = recommendation.get('reason', 'duplicate') if recommendation else 'duplicate'
+                print(f"Skipping {thread.id}: {reason}")
                 results.append({
                     "action": "skipped",
                     "thread_id": thread.id,
-                    "reason": recommendation.get('reason') if recommendation else "duplicate",
+                    "reason": reason,
                 })
                 continue
 
             # Handle APPEND - add to existing entry
             if action == 'APPEND':
-                recommendation = None
-                for match in thread.correlation_matches:
-                    if 'recommendation' in match:
-                        recommendation = match['recommendation']
-                        break
-
+                recommendation = get_recommendation(thread)
                 if recommendation and recommendation.get('entry_id'):
                     result = handle_append(thread, recommendation['entry_id'], commit)
                     results.append(result)
@@ -515,12 +545,7 @@ def process_routing(routing_file: str, commit: bool = False) -> list[dict]:
 
             # Handle QUEUE - task on existing chord
             if action == 'QUEUE':
-                recommendation = None
-                for match in thread.correlation_matches:
-                    if 'recommendation' in match:
-                        recommendation = match['recommendation']
-                        break
-
+                recommendation = get_recommendation(thread)
                 if recommendation and recommendation.get('chord_repo'):
                     result = handle_queue_task(thread, recommendation['chord_repo'], commit)
                     results.append(result)

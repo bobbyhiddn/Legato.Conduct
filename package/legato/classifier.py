@@ -122,7 +122,25 @@ class ClassifiedThread:
         Args:
             data: Thread data dictionary
             valid_categories: Set of valid category names (for dynamic categories)
+
+        Raises:
+            TypeError: If data is not a dictionary
         """
+        # Validate input type, with fallback for stringified JSON
+        if isinstance(data, str):
+            # Try to parse as JSON in case it's a stringified object
+            try:
+                data = json.loads(data)
+            except json.JSONDecodeError:
+                raise TypeError(
+                    f"ClassifiedThread.from_dict() expects a dict, got unparseable string: {repr(data)[:100]}"
+                )
+
+        if not isinstance(data, dict):
+            raise TypeError(
+                f"ClassifiedThread.from_dict() expects a dict, got {type(data).__name__}: {repr(data)[:100]}"
+            )
+
         # Always KNOWLEDGE in new ontology
         thread_type = ThreadType.KNOWLEDGE
 

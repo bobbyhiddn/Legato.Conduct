@@ -359,13 +359,26 @@ def process_routing(routing_file: str, spawn_and_assign: bool = False, queue_to_
     with open(routing_file) as f:
         routing = json.load(f)
 
+    # Validate routing structure
+    if not isinstance(routing, list):
+        raise ValueError(f"routing.json must be a list, got {type(routing).__name__}")
+
     results = []
 
-    for item in routing:
+    for i, item in enumerate(routing):
+        # Skip non-dict items with warning
+        if not isinstance(item, dict):
+            print(f"Warning: Skipping invalid item at index {i}: expected dict, got {type(item).__name__}", file=sys.stderr)
+            continue
+
         if item.get("type") != "PROJECT":
             continue
 
-        thread = ClassifiedThread.from_dict(item)
+        try:
+            thread = ClassifiedThread.from_dict(item)
+        except (TypeError, ValueError) as e:
+            print(f"Warning: Skipping invalid item at index {i}: {e}", file=sys.stderr)
+            continue
 
         try:
             spec = create_project(thread)
