@@ -34,7 +34,7 @@ class ProjectSpec:
     def get_repo_name(self, org: str = "Legato") -> str:
         """Get the full repository name."""
         suffix = "Note" if self.scope == ChordScope.NOTE else "Chord"
-        return f"{org}/Lab.{self.name}.{suffix}"
+        return f"{org}/{self.name}.{suffix}"
 
     def to_signal(self) -> dict:
         """Convert to signal format for Listen."""
@@ -47,7 +47,7 @@ class ProjectSpec:
             "domain_tags": self.domain_tags,
             "intent": self.description[:200] if self.description else "",
             "key_phrases": self.key_phrases,
-            "path": f"Lab.{self.name}.{'Note' if self.scope == ChordScope.NOTE else 'Chord'}",
+            "path": f"{self.name}.{'Note' if self.scope == ChordScope.NOTE else 'Chord'}",
             "created": self.created or datetime.utcnow().isoformat() + "Z",
             "updated": datetime.utcnow().isoformat() + "Z",
         }
