@@ -11,6 +11,12 @@ Comprehensive architecture and operational documentation for the Legato ecosyste
 | [API Reference](api-reference.md) | API contracts between components |
 | [Deployment Guide](deployment.md) | Deployment architecture and configuration |
 
+## Specifications
+
+| Specification | Status | Description |
+|---------------|--------|-------------|
+| [Link Propagation](specs/link-propagation-spec.md) | Proposed | How Conduct handles note links during processing |
+
 ## Quick Start
 
 Legato transforms voice transcripts into structured knowledge and executable projects:
