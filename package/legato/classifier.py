@@ -10,6 +10,7 @@ import sys
 import json
 import argparse
 import math
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -200,8 +201,19 @@ def load_prompt(prompt_name: str) -> str:
     raise FileNotFoundError(f"Prompt not found: {prompt_file}")
 
 
-def call_claude(system_prompt: str, user_input: str, max_tokens: int = 4096) -> tuple[str, str]:
+def call_claude(system_prompt: str, user_input: str, max_tokens: int = 4096,
+                max_retries: int = 4, base_delay: float = 2.0) -> tuple[str, str]:
     """Call Claude API with the given prompts.
+
+    Includes retry logic with exponential backoff for transient errors like
+    overloaded API (529) and rate limits (429).
+
+    Args:
+        system_prompt: System prompt for Claude
+        user_input: User message content
+        max_tokens: Maximum tokens in response
+        max_retries: Maximum number of retry attempts (default 4)
+        base_delay: Base delay in seconds for exponential backoff (default 2.0)
 
     Returns:
         Tuple of (response_text, stop_reason)
@@ -213,14 +225,46 @@ def call_claude(system_prompt: str, user_input: str, max_tokens: int = 4096) -> 
 
     client = anthropic.Anthropic()
 
-    message = client.messages.create(
-        model="claude-opus-4-5-20251101",
-        max_tokens=max_tokens,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_input}]
-    )
+    last_exception = None
+    for attempt in range(max_retries + 1):
+        try:
+            message = client.messages.create(
+                model="claude-opus-4-5-20251101",
+                max_tokens=max_tokens,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_input}]
+            )
+            return message.content[0].text, message.stop_reason
 
-    return message.content[0].text, message.stop_reason
+        except anthropic.OverloadedError as e:
+            last_exception = e
+            if attempt < max_retries:
+                delay = base_delay * (2 ** attempt)  # Exponential backoff: 2, 4, 8, 16 seconds
+                print(f"API overloaded (attempt {attempt + 1}/{max_retries + 1}), retrying in {delay}s...", file=sys.stderr)
+                time.sleep(delay)
+            else:
+                print(f"API overloaded after {max_retries + 1} attempts, giving up", file=sys.stderr)
+
+        except anthropic.RateLimitError as e:
+            last_exception = e
+            if attempt < max_retries:
+                delay = base_delay * (2 ** attempt)
+                print(f"Rate limited (attempt {attempt + 1}/{max_retries + 1}), retrying in {delay}s...", file=sys.stderr)
+                time.sleep(delay)
+            else:
+                print(f"Rate limited after {max_retries + 1} attempts, giving up", file=sys.stderr)
+
+        except anthropic.APIConnectionError as e:
+            last_exception = e
+            if attempt < max_retries:
+                delay = base_delay * (2 ** attempt)
+                print(f"Connection error (attempt {attempt + 1}/{max_retries + 1}), retrying in {delay}s...", file=sys.stderr)
+                time.sleep(delay)
+            else:
+                print(f"Connection error after {max_retries + 1} attempts, giving up", file=sys.stderr)
+
+    # All retries exhausted, raise the last exception
+    raise last_exception
 
 
 def repair_truncated_json(text: str) -> str:
