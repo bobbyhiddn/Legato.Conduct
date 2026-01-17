@@ -14,18 +14,31 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Validate payload
+        id: validate
         run: |
           echo "Queue ID: ${{ github.event.client_payload.queue_id }}"
           echo "Project: ${{ github.event.client_payload.project_name }}"
           echo "Type: ${{ github.event.client_payload.project_type }}"
+          echo "Target Repo: ${{ github.event.client_payload.target_repo }}"
+          echo "Issue Title: ${{ github.event.client_payload.issue_title }}"
+
+          # Determine if this is targeting an existing chord
+          if [ -n "${{ github.event.client_payload.target_repo }}" ]; then
+            echo "Mode: Spawning incident to existing chord"
+            echo "spawn_mode=existing" >> $GITHUB_OUTPUT
+          else
+            echo "Mode: Creating new project"
+            echo "spawn_mode=new" >> $GITHUB_OUTPUT
+          fi
 
       - name: Create repository from template
+        if: steps.validate.outputs.spawn_mode == 'new'
         env:
           GH_TOKEN: ${{ secrets.LAB_PAT }}
           PROJECT_NAME: ${{ github.event.client_payload.project_name }}
           PROJECT_TYPE: ${{ github.event.client_payload.project_type }}
         run: |
-          LEGATO_ORG=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f1)
+          REPO_ORG=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f1)
 
           # Determine suffix based on project type
           if [ "${PROJECT_TYPE}" = "note" ]; then
@@ -34,7 +47,7 @@ jobs:
             SUFFIX="Chord"
           fi
 
-          NEW_REPO="${LEGATO_ORG}/${PROJECT_NAME}.${SUFFIX}"
+          NEW_REPO="${REPO_ORG}/${PROJECT_NAME}.${SUFFIX}"
 
           # Check if repo already exists (idempotent)
           if gh repo view "${NEW_REPO}" &>/dev/null; then
@@ -78,13 +91,14 @@ jobs:
           fi
 
       - name: Write SIGNAL.md
+        if: steps.validate.outputs.spawn_mode == 'new'
         env:
           GH_TOKEN: ${{ secrets.LAB_PAT }}
           SIGNAL_JSON: ${{ toJson(github.event.client_payload.signal_json) }}
           PROJECT_NAME: ${{ github.event.client_payload.project_name }}
           PROJECT_TYPE: ${{ github.event.client_payload.project_type }}
         run: |
-          LEGATO_ORG=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f1)
+          REPO_ORG=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f1)
 
           if [ "${PROJECT_TYPE}" = "note" ]; then
             SUFFIX="Note"
@@ -129,37 +143,76 @@ jobs:
           TASKER_BODY: ${{ github.event.client_payload.tasker_body }}
           PROJECT_NAME: ${{ github.event.client_payload.project_name }}
           PROJECT_TYPE: ${{ github.event.client_payload.project_type }}
+          TARGET_REPO: ${{ github.event.client_payload.target_repo }}
+          ISSUE_TITLE: ${{ github.event.client_payload.issue_title }}
+          SPAWN_MODE: ${{ steps.validate.outputs.spawn_mode }}
         run: |
-          LEGATO_ORG=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f1)
+          DEFAULT_ORG=$(echo "${GITHUB_REPOSITORY}" | cut -d'/' -f1)
 
-          if [ "${PROJECT_TYPE}" = "note" ]; then
-            SUFFIX="Note"
+          # Determine target repository and org
+          if [ -n "${TARGET_REPO}" ]; then
+            # Spawning to existing chord - extract org from target_repo
+            REPO="${TARGET_REPO}"
+            REPO_ORG=$(echo "${REPO}" | cut -d'/' -f1)
+            REPO_NAME=$(echo "${REPO}" | cut -d'/' -f2)
+            TITLE="${ISSUE_TITLE:-Incident}"
+            LABELS="copilot,legato:incident"
+            echo "Spawning incident to existing chord: ${REPO}"
           else
-            SUFFIX="Chord"
+            # Creating new project - use default org
+            REPO_ORG="${DEFAULT_ORG}"
+            if [ "${PROJECT_TYPE}" = "note" ]; then
+              SUFFIX="Note"
+            else
+              SUFFIX="Chord"
+            fi
+            REPO="${REPO_ORG}/${PROJECT_NAME}.${SUFFIX}"
+            REPO_NAME="${PROJECT_NAME}.${SUFFIX}"
+            TITLE="Initial Implementation"
+            LABELS="copilot"
+            echo "Creating initial issue in new project: ${REPO}"
           fi
 
-          REPO="${LEGATO_ORG}/${PROJECT_NAME}.${SUFFIX}"
-          REPO_NAME="${PROJECT_NAME}.${SUFFIX}"
+          # Verify target repo exists (especially important for existing chord mode)
+          if ! gh repo view "${REPO}" &>/dev/null; then
+            echo "ERROR: Repository ${REPO} does not exist"
+            exit 1
+          fi
 
-          # Check if "Initial Implementation" issue already exists (idempotent)
-          EXISTING_ISSUE=$(gh api "/repos/${REPO}/issues?state=all" \
-            -H "Accept: application/vnd.github+json" \
-            --jq '.[] | select(.title == "Initial Implementation") | .number' | head -1)
+          # For existing chords, we always create a new issue (incidents are additive)
+          # For new projects, check if "Initial Implementation" already exists (idempotent)
+          if [ "${SPAWN_MODE}" = "new" ]; then
+            EXISTING_ISSUE=$(gh api "/repos/${REPO}/issues?state=all" \
+              -H "Accept: application/vnd.github+json" \
+              --jq '.[] | select(.title == "Initial Implementation") | .number' | head -1)
 
-          if [ -n "${EXISTING_ISSUE}" ]; then
-            echo "Issue 'Initial Implementation' already exists: #${EXISTING_ISSUE}"
-            ISSUE_NUMBER="${EXISTING_ISSUE}"
-            ISSUE_URL="https://github.com/${REPO}/issues/${ISSUE_NUMBER}"
-          else
+            if [ -n "${EXISTING_ISSUE}" ]; then
+              echo "Issue 'Initial Implementation' already exists: #${EXISTING_ISSUE}"
+              ISSUE_NUMBER="${EXISTING_ISSUE}"
+              ISSUE_URL="https://github.com/${REPO}/issues/${ISSUE_NUMBER}"
+            fi
+          fi
+
+          # Create issue if needed
+          if [ -z "${ISSUE_NUMBER}" ]; then
             echo "Creating issue in ${REPO} using REST API..."
 
             # Create issue using REST API (auto-creates labels)
             ISSUE_RESPONSE=$(gh api "/repos/${REPO}/issues" \
               -X POST \
               -H "Accept: application/vnd.github+json" \
-              -f title="Initial Implementation" \
+              -f title="${TITLE}" \
               -f body="${TASKER_BODY}" \
-              -f "labels[]=copilot")
+              -f "labels[]=${LABELS%%,*}")
+
+            # Add additional labels if present
+            if [[ "${LABELS}" == *","* ]]; then
+              SECOND_LABEL="${LABELS#*,}"
+              gh api "/repos/${REPO}/issues/$(echo "${ISSUE_RESPONSE}" | jq -r '.number')/labels" \
+                -X POST \
+                -H "Accept: application/vnd.github+json" \
+                -f "labels[]=${SECOND_LABEL}" || true
+            fi
 
             ISSUE_NUMBER=$(echo "${ISSUE_RESPONSE}" | jq -r '.number')
             ISSUE_URL=$(echo "${ISSUE_RESPONSE}" | jq -r '.html_url')
@@ -180,7 +233,7 @@ jobs:
                 }
               }
             }
-          ' -f owner="${LEGATO_ORG}" -f repo="${REPO_NAME}" -F number="${ISSUE_NUMBER}" --jq '.data.repository.issue.id')
+          ' -f owner="${REPO_ORG}" -f repo="${REPO_NAME}" -F number="${ISSUE_NUMBER}" --jq '.data.repository.issue.id')
 
           if [ -z "${ISSUE_ID}" ] || [ "${ISSUE_ID}" = "null" ]; then
             echo "ERROR: Could not get issue GraphQL ID"
@@ -203,7 +256,7 @@ jobs:
                 }
               }
             }
-          ' -f owner="${LEGATO_ORG}" -f repo="${REPO_NAME}" --jq '.data.repository.suggestedActors.nodes[] | select(.login == "copilot-swe-agent") | .id')
+          ' -f owner="${REPO_ORG}" -f repo="${REPO_NAME}" --jq '.data.repository.suggestedActors.nodes[] | select(.login == "copilot-swe-agent") | .id')
 
           if [ -z "${COPILOT_ID}" ] || [ "${COPILOT_ID}" = "null" ]; then
             echo "ERROR: Copilot (copilot-swe-agent) not available as assignee"
