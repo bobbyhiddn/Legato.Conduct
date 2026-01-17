@@ -34,7 +34,7 @@ jobs:
             SUFFIX="Chord"
           fi
 
-          NEW_REPO="${LEGATO_ORG}/Lab.${PROJECT_NAME}.${SUFFIX}"
+          NEW_REPO="${LEGATO_ORG}/${PROJECT_NAME}.${SUFFIX}"
 
           # Check if repo already exists (idempotent)
           if gh repo view "${NEW_REPO}" &>/dev/null; then
@@ -138,8 +138,8 @@ jobs:
             SUFFIX="Chord"
           fi
 
-          REPO="${LEGATO_ORG}/Lab.${PROJECT_NAME}.${SUFFIX}"
-          REPO_NAME="Lab.${PROJECT_NAME}.${SUFFIX}"
+          REPO="${LEGATO_ORG}/${PROJECT_NAME}.${SUFFIX}"
+          REPO_NAME="${PROJECT_NAME}.${SUFFIX}"
 
           # Check if "Initial Implementation" issue already exists (idempotent)
           EXISTING_ISSUE=$(gh api "/repos/${REPO}/issues?state=all" \
