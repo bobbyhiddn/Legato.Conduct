@@ -25,6 +25,7 @@ from .projects import (
     ProjectSpec,
     create_project,
     spawn_lab_repo,
+    spawn_to_existing_chord,
 )
 from .correlation import (
     Signal,
@@ -49,6 +50,7 @@ __all__ = [
     "ProjectSpec",
     "create_project",
     "spawn_lab_repo",
+    "spawn_to_existing_chord",
     # Correlation
     "Signal",
     "correlate_signal",

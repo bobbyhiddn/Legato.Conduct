@@ -250,6 +250,83 @@ def spawn_lab_repo(spec: ProjectSpec, org: str = None) -> dict:
     }
 
 
+def spawn_to_existing_chord(
+    target_repo: str,
+    title: str,
+    body: str,
+    labels: list[str] = None,
+    assign_copilot: bool = True,
+) -> dict:
+    """
+    Spawn a new issue/incident to an existing chord repository.
+
+    This enables agents to add new tasks to existing projects rather than
+    creating new repositories. The issue is created and optionally assigned
+    to Copilot for autonomous implementation.
+
+    Args:
+        target_repo: Full repository name (e.g., "Legato/project-name.Chord")
+        title: Issue title
+        body: Issue body (tasker format recommended)
+        labels: Optional list of labels to apply
+        assign_copilot: Whether to assign the issue to Copilot
+
+    Returns:
+        Issue creation result with repo, issue_number, issue_url, assigned
+    """
+    token = os.environ.get("GH_TOKEN")
+    if not token:
+        raise RuntimeError("GH_TOKEN environment variable not set")
+
+    labels = labels or ["copilot", "legato:incident"]
+
+    # Verify the repository exists
+    check_cmd = ["gh", "repo", "view", target_repo, "--json", "name"]
+    result = subprocess.run(check_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"Repository not found: {target_repo}")
+
+    # Create the issue
+    create_cmd = [
+        "gh", "issue", "create",
+        "--repo", target_repo,
+        "--title", title,
+        "--body", body,
+        "--label", ",".join(labels)
+    ]
+
+    result = subprocess.run(create_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to create issue: {result.stderr}")
+
+    issue_url = result.stdout.strip()
+    issue_number = int(issue_url.split("/")[-1])
+
+    assigned = False
+    if assign_copilot:
+        # Assign to Copilot using the assign script
+        scripts_dir = Path(__file__).parent.parent.parent / "scripts"
+        assign_script = scripts_dir / "assign_copilot.py"
+
+        if assign_script.exists():
+            assign_result = subprocess.run([
+                sys.executable, str(assign_script),
+                "--repo", target_repo,
+                "--issue", str(issue_number)
+            ], capture_output=True, text=True)
+            assigned = assign_result.returncode == 0
+        else:
+            print(f"Warning: assign_copilot.py not found at {assign_script}", file=sys.stderr)
+
+    return {
+        "repo": target_repo,
+        "issue_number": issue_number,
+        "issue_url": issue_url,
+        "assigned": assigned,
+        "action": "spawned_to_existing"
+    }
+
+
 def create_issue_and_assign(spec: ProjectSpec, org: str = "Legato") -> dict:
     """
     Create an issue and assign to Copilot.
