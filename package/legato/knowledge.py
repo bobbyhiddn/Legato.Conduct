@@ -169,7 +169,8 @@ def extract_knowledge(thread: ClassifiedThread) -> KnowledgeArtifact:
     slug = "".join(c if c.isalnum() or c == "-" else "-" for c in slug)
     slug = "-".join(filter(None, slug.split("-")))[:50]
 
-    artifact_id = f"library.{category_str}s.{slug}"
+    # Canonical ID format: library.{category}.{slug} (singular category)
+    artifact_id = f"library.{category_str}.{slug}"
 
     return KnowledgeArtifact(
         id=artifact_id,
